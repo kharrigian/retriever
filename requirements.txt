@@ -1,0 +1,7 @@
+numpy
+pandas
+tqdm
+praw
+psaw
+pytest
+pytest-cov
