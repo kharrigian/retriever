@@ -22,12 +22,6 @@ To ensure the `retriever` has been properly installed, you may run the test suit
 pytest tests/ -Wignore -v
 ```
 
-Alternatively, to run tests and check package coverage, you can do so using
-
-```
-pytest tests/ --cov=retriever/ --cov-report=html -v -Wignore
-```
-
 ## Usage
 
 To interact with the API, simply import your desired platform wrapper i.e.
