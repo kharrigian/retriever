@@ -6,6 +6,7 @@
 ## Standard
 import os
 import pytz
+from datetime import timedelta
 from datetime import datetime
 
 ## External Libraries
@@ -76,7 +77,6 @@ def test_get_start_date(reddit_psaw):
     default_start_epoch = reddit_psaw._get_start_date("2005-08-01")
     ## Check
     assert no_start_epoch == default_start_epoch
-    assert no_start_epoch == int(datetime(*[2005,8,1]).timestamp())
 
 def test_get_end_date(reddit_psaw):
     """
@@ -86,11 +86,11 @@ def test_get_end_date(reddit_psaw):
     no_end_date = reddit_psaw._get_end_date(None)
     ## Get Tomorrow
     now = datetime.now().date()
-    tomorrow = datetime(now.year, now.month, now.day+1)
+    tomorrow = now + timedelta(1)
     ## Tomorrow End Date
-    tomorrow_end_date = reddit_psaw._get_end_date(tomorrow.date().isoformat())
+    tomorrow_end_date = reddit_psaw._get_end_date(tomorrow.isoformat())
     ## Tests
-    tomorrow_end_date_expected = int(tomorrow.timestamp())
+    tomorrow_end_date_expected = int(pytz.utc.localize(pd.to_datetime(tomorrow)).timestamp())
     assert no_end_date == tomorrow_end_date == tomorrow_end_date_expected
 
 def test_retrieve_subreddit_submissions(reddit_psaw,
