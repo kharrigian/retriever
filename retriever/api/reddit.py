@@ -8,6 +8,7 @@
 import os
 import sys
 import json
+import pytz
 import pkgutil
 import datetime
 import requests
@@ -155,8 +156,9 @@ class Reddit(object):
         """
         if start_date_iso is None:
             start_date_iso = "2005-08-01"
-        start_date_digits = list(map(int,start_date_iso.split("-")))
-        start_epoch = int(datetime.datetime(*start_date_digits).timestamp())
+        start_date_dt = pd.to_datetime(start_date_iso)
+        start_date_dt = pytz.utc.localize(start_date_dt)
+        start_epoch = int(start_date_dt.timestamp())
         return start_epoch
     
     def _get_end_date(self,
@@ -175,9 +177,63 @@ class Reddit(object):
         if end_date_iso is None:
             end_date_iso = (datetime.datetime.now().date() + \
                             datetime.timedelta(1)).isoformat()
-        end_date_digits = list(map(int,end_date_iso.split("-")))
-        end_epoch = int(datetime.datetime(*end_date_digits).timestamp())
+        end_date_dt = pd.to_datetime(end_date_iso)
+        end_date_dt = pytz.utc.localize(end_date_dt)
+        end_epoch = int(end_date_dt.timestamp())
         return end_epoch
+    
+    def _parse_date_frequency(self,
+                              freq):
+        """
+        Convert str-formatted frequency into seconds. Base frequencies
+        include seconds (s), minutes (m), hours (h), days (d), weeks (w),
+        months (mo), and years (y).
+
+        Args:
+            freq (str): "{int}{base_frequency}"
+        
+        Returns:
+            period (int): Time in seconds associated with frequency
+        """
+        ## Frequencies in terms of seconds
+        base_freqs = {
+            "s":1,
+            "m":60,
+            "h":60 * 60,
+            "d":60 * 60 * 24,
+            "w":60 * 60 * 24 * 7,
+            "mo":60 * 60 * 24 * 7 * 31,
+            "y":60 * 60 * 24 * 7 * 31 * 365
+        }
+        ## Parse String
+        freq = freq.lower()
+        freq_ind = 0
+        while freq_ind < len(freq) - 1 and freq[freq_ind].isdigit():
+            freq_ind += 1
+        mult = 1
+        if freq_ind > 0:
+            mult = int(freq[:freq_ind])
+        base_freq = freq[freq_ind:]
+        if base_freq not in base_freqs:
+            raise ValueError("Could not parse frequency.")
+        period = mult * base_freqs.get(base_freq)
+        return period
+
+    def _chunk_timestamps(self,
+                          start_epoch,
+                          end_epoch,
+                          chunksize):
+        """
+
+        """
+        if chunksize is None:
+            time_chunks = [start_epoch, end_epoch]
+        else:
+            time_chunksize = self._parse_date_frequency(chunksize)
+            time_chunks = [start_epoch]
+            while time_chunks[-1] < end_epoch:
+                time_chunks.append(min(time_chunks[-1] + time_chunksize, end_epoch))
+        return time_chunks
     
     def _parse_psaw_submission_request(self,
                                        request):
@@ -471,22 +527,22 @@ class Reddit(object):
                                        end_date=None,
                                        limit=REQUEST_LIMIT,
                                        cols=None,
-                                       chunksize=1000):
+                                       chunksize=None):
         """
         Retrieve submissions for a particular subreddit
 
         Args:
             subreddit (str): Canonical name of the subreddit
             start_date (str or None): If str, expected
-                    to be of form "YYYY-MM-DD". If None, 
-                    defaults to start of Reddit
+                    to be parsed by pandas.to_datetime. None
+                    defaults to beginning of Reddit.
             end_date (str or None):  If str, expected
-                    to be of form "YYYY-MM-DD". If None, 
+                    to be parse by pandas.to_datetime. None, 
                     defaults to current date
             limit (int): Maximum number of submissions to 
                     retrieve
             cols (list or None): Optional Filters
-            chunksize (int): Estimated query return size per request
+            chunksize (str): Date frequency
         
         Returns:
             df (pandas dataframe): Submission search data
@@ -494,25 +550,10 @@ class Reddit(object):
         ## Get Start/End Epochs
         start_epoch = self._get_start_date(start_date)
         end_epoch = self._get_end_date(end_date)
-        ## Get Expected Document Load
-        if hasattr(self, "_init_praw") and self._init_praw:
-            self.api._search_func = self.api._search
-        request_size = next(self.api.search_submissions(subreddit=subreddit,
-                                                        after=start_epoch,
-                                                        before=end_epoch,
-                                                        cols=["id"],
-                                                        aggs=["subreddit"]))
-        if request_size.get("subreddit") is not None and len(request_size.get("subreddit")) == 1:
-            request_size = request_size["subreddit"][0]["doc_count"]
-        else:
-            request_size = 1
-        if hasattr(self, "_init_praw") and self._init_praw:
-            self.api._search_func = self.api._praw_search
-        n_time_chunks = max(int(np.ceil(request_size / chunksize)), 1)
-        time_chunksize = int((end_epoch - start_epoch) / n_time_chunks)
-        time_chunks = [start_epoch]
-        while time_chunks[-1] < end_epoch:
-            time_chunks.append(min(time_chunks[-1] + time_chunksize, end_epoch))
+        ## Chunk Queries into Time Periods
+        time_chunks = self._chunk_timestamps(start_epoch,
+                                             end_epoch,
+                                             chunksize)
         ## Make Query Attempt
         df_all = []
         backoff = self._backoff if hasattr(self, "_backoff") else 2
@@ -527,7 +568,7 @@ class Reddit(object):
                     query_params = dict(after=tcstart,
                                         before=tcstop+1,
                                         subreddit=subreddit,
-                                        limit=chunksize * 100)
+                                        limit=limit)
                     if cols is not None:
                         query_params["filter"] = cols
                     req = self.api.search_submissions(**query_params)
@@ -597,7 +638,8 @@ class Reddit(object):
                                  author,
                                  start_date=None,
                                  end_date=None,
-                                 limit=REQUEST_LIMIT):
+                                 limit=REQUEST_LIMIT,
+                                 chunksize=None):
         """
         Retrieve comments for a particular Reddit user. Does not
         return user-authored submissions (e.g. self-text)
@@ -605,13 +647,14 @@ class Reddit(object):
         Args:
             author (str): Username of the redditor
             start_date (str or None): If str, expected
-                    to be of form "YYYY-MM-DD". If None, 
-                    defaults to start of Reddit
+                    to be parsed by pandas.to_datetime. None
+                    defaults to beginning of Reddit.
             end_date (str or None):  If str, expected
-                    to be of form "YYYY-MM-DD". If None, 
+                    to be parse by pandas.to_datetime. None, 
                     defaults to current date
-            limit (int): Maximum number of submissions to 
+            limit (int): Maximum number of comments to 
                     retrieve
+            chunksize (str or None): Date frequency for breaking up queries
         
         Returns:
             df (pandas dataframe): Comment search data
@@ -619,55 +662,52 @@ class Reddit(object):
         ## Get Start/End Epochs
         start_epoch = self._get_start_date(start_date)
         end_epoch = self._get_end_date(end_date)
-        ## Automatic Limit Detection
-        backoff = self._backoff if hasattr(self, "_backoff") else 2
-        retries = self._max_retries if hasattr(self, "_max_retries") else 3
-        for _ in range(retries):
-            try:
-                if limit is None:
-                    if hasattr(self, "_init_praw") and self._init_praw:
-                        self.api._search_func = self.api._search
-                    counts = next(self.api.search_comments(author=author,
-                                                           before=end_epoch,
-                                                           after=start_epoch,
-                                                           aggs='author'))
-                    limit = sum([c["doc_count"] for c in counts["author"]])
-                    if hasattr(self, "_init_praw") and self._init_praw:
-                        self.api._search_func = self.api._praw_search
-                break
-            except Exception as e:
-                sleep(backoff)
-                backoff = 2 ** backoff
-        if limit is None:
-            return None
-        ## Construct query Params
-        query_params = {"before":end_epoch,
-                        "after":start_epoch,
-                        "limit":limit,
-                        "author":author}
+        ## Chunk Queries into Time Periods
+        time_chunks = self._chunk_timestamps(start_epoch,
+                                             end_epoch,
+                                             chunksize)
         ## Make Query Attempt
+        df_all = []
         backoff = self._backoff if hasattr(self, "_backoff") else 2
         retries = self._max_retries if hasattr(self, "_max_retries") else 3
-        for _ in range(retries):
-            try:
-                ## Construct Call
-                req = self.api.search_comments(**query_params)
-                ## Retrieve and Parse Data
-                df = self._parse_psaw_comment_request(req)
-                if len(df) > 0:
-                    df = df.sort_values("created_utc", ascending=True)
-                    df = df.reset_index(drop=True)
-                return df
-            except Exception as e:
-                sleep(backoff)
-                backoff = 2 ** backoff
-    
+        total = 0
+        for tcstart, tcstop in zip(time_chunks[:-1], time_chunks[1:]):
+            ## Check Limit
+            if limit is not None and total >= limit:
+                break
+            for _ in range(retries):
+                try:
+                    ## Construct Call
+                    query_params = {"before":tcstop+1,
+                                    "after":tcstart,
+                                    "limit":limit,
+                                    "author":author}
+                    ## Construct Call
+                    req = self.api.search_comments(**query_params)
+                    ## Retrieve and Parse Data
+                    df = self._parse_psaw_comment_request(req)
+                    if len(df) > 0:
+                        df = df.sort_values("created_utc", ascending=True)
+                        df = df.reset_index(drop=True)
+                        df_all.append(df)
+                        total += len(df)
+                    break
+                except Exception as e:
+                    sleep(backoff)
+                    backoff = 2 ** backoff
+        if len(df_all) == 0:
+            return
+        df_all = pd.concat(df_all).reset_index(drop=True)
+        if limit is not None and len(df_all) > limit:
+            df_all = df_all.iloc[:limit].copy()
+        return df_all
 
     def retrieve_author_submissions(self,
                                     author,
                                     start_date=None,
                                     end_date=None,
-                                    limit=REQUEST_LIMIT):
+                                    limit=REQUEST_LIMIT,
+                                    chunksize=None):
         """
         Retrieve submissions for a particular Reddit user. Does not
         return user-authored comments
@@ -675,62 +715,60 @@ class Reddit(object):
         Args:
             author (str): Username of the redditor
             start_date (str or None): If str, expected
-                    to be of form "YYYY-MM-DD". If None, 
-                    defaults to start of Reddit
+                    to be parsed by pandas.to_datetime. None
+                    defaults to beginning of Reddit.
             end_date (str or None):  If str, expected
-                    to be of form "YYYY-MM-DD". If None, 
+                    to be parse by pandas.to_datetime. None, 
                     defaults to current date
             limit (int): Maximum number of submissions to 
                     retrieve
-        
+            chunksize (str or None): Date frequency for breaking up queries
+
         Returns:
             df (pandas dataframe): Comment search data
         """
         ## Get Start/End Epochs
         start_epoch = self._get_start_date(start_date)
         end_epoch = self._get_end_date(end_date)
-        ## Automatic Limit Detection
+        ## Chunk Queries into Time Periods
+        time_chunks = self._chunk_timestamps(start_epoch,
+                                             end_epoch,
+                                             chunksize)
+        ## Make Queries
+        df_all = []
         backoff = self._backoff if hasattr(self, "_backoff") else 2
         retries = self._max_retries if hasattr(self, "_max_retries") else 3
-        for _ in range(retries):
-            try:
-                if limit is None:
-                    if hasattr(self, "_init_praw") and self._init_praw:
-                        self.api._search_func = self.api._search
-                    counts = next(self.api.search_submissions(author=author,
-                                                            before=end_epoch,
-                                                            after=start_epoch,
-                                                            aggs='author'))
-                    limit = sum([c["doc_count"] for c in counts["author"]])
-                    if hasattr(self, "_init_praw") and self._init_praw:
-                        self.api._search_func = self.api._praw_search
+        total = 0
+        for tcstart, tcstop in zip(time_chunks[:-1], time_chunks[1:]):
+            ## Check Limit
+            if limit is not None and total >= limit:
                 break
-            except Exception as e:
-                sleep(backoff)
-                backoff = 2 ** backoff
-        if limit is None:
-            return None
-        ## Construct query Params
-        query_params = {"before":end_epoch,
-                        "after":start_epoch,
-                        "limit":limit,
-                        "author":author}
-        ## Make Query Attempt
-        backoff = self._backoff if hasattr(self, "_backoff") else 2
-        retries = self._max_retries if hasattr(self, "_max_retries") else 3
-        for _ in range(retries):
-            try:
-                ## Construct Call
-                req = self.api.search_submissions(**query_params)
-                ## Retrieve and Parse Data
-                df = self._parse_psaw_submission_request(req)
-                if len(df) > 0:
-                    df = df.sort_values("created_utc", ascending=True)
-                    df = df.reset_index(drop=True)
-                return df
-            except Exception as e:
-                sleep(backoff)
-                backoff = 2 ** backoff
+            for _ in range(retries):
+                try:
+                    ## Construct Call
+                    query_params = {"before":tcstop+1,
+                                    "after":tcstart,
+                                    "limit":limit,
+                                    "author":author}
+                    ## Construct Call
+                    req = self.api.search_submissions(**query_params)
+                    ## Retrieve and Parse Data
+                    df = self._parse_psaw_submission_request(req)
+                    if len(df) > 0:
+                        df = df.sort_values("created_utc", ascending=True)
+                        df = df.reset_index(drop=True)
+                        df_all.append(df)
+                        total += len(df)
+                    break
+                except Exception as e:
+                    sleep(backoff)
+                    backoff = 2 ** backoff
+        if len(df_all) == 0:
+            return
+        df_all = pd.concat(df_all).reset_index(drop=True)
+        if limit is not None and len(df_all) > limit:
+            df_all = df_all.iloc[:limit].copy()
+        return df_all
 
     def search_for_submissions(self,
                                query=None,
@@ -745,10 +783,10 @@ class Reddit(object):
             query (str): Title query
             subreddit (str or None): Additional filtering by subreddit.
             start_date (str or None): If str, expected
-                    to be of form "YYYY-MM-DD". If None, 
-                    defaults to start of Reddit
+                    to be parsed by pandas.to_datetime. None
+                    defaults to beginning of Reddit.
             end_date (str or None):  If str, expected
-                    to be of form "YYYY-MM-DD". If None, 
+                    to be parse by pandas.to_datetime. None, 
                     defaults to current date
             limit (int): Maximum number of submissions to 
                     retrieve
@@ -799,10 +837,10 @@ class Reddit(object):
             query (str): Comment query
             subreddit (str or None): Additional filtering by subreddit.
             start_date (str or None): If str, expected
-                    to be of form "YYYY-MM-DD". If None, 
-                    defaults to start of Reddit
+                    to be parsed by pandas.to_datetime. None
+                    defaults to beginning of Reddit.
             end_date (str or None):  If str, expected
-                    to be of form "YYYY-MM-DD". If None, 
+                    to be parse by pandas.to_datetime. None, 
                     defaults to current date
             limit (int): Maximum number of submissions to 
                     retrieve
@@ -843,13 +881,17 @@ class Reddit(object):
     def identify_active_subreddits(self,
                                    start_date=None,
                                    end_date=None,
-                                   search_freq=5):
+                                   chunksize="5m"):
         """
         Identify active subreddits based on submission histories
 
         Args:
-            start_date (str, isoformat): Start date of activity
-            end_date (str, isoformat): End data of activity
+            start_date (str or None): If str, expected
+                    to be parsed by pandas.to_datetime. None
+                    defaults to beginning of Reddit.
+            end_date (str or None):  If str, expected
+                    to be parse by pandas.to_datetime. None, 
+                    defaults to current date
             search_freq (int): Minutes to consider per request. Lower frequency 
                                means better coverage but longer query time.
         
@@ -860,15 +902,15 @@ class Reddit(object):
         start_epoch = self._get_start_date(start_date)
         end_epoch = self._get_end_date(end_date)
         ## Create Search Range
-        date_range = [start_epoch]
-        while date_range[-1] < end_epoch:
-            date_range.append(date_range[-1] + search_freq*60)
+        time_chunks = self._chunk_timestamps(start_epoch,
+                                             end_epoch,
+                                             chunksize)
         ## Query Subreddits
         endpoint = "https://api.pushshift.io/reddit/search/submission/"
         subreddit_count = Counter()
-        for start, stop in tqdm(zip(date_range[:-1], date_range[1:]), total = len(date_range)-1, file=sys.stdout):
+        for start, stop in tqdm(zip(time_chunks[:-1], time_chunks[1:]), total = len(time_chunks)-1, file=sys.stdout):
             ## Make Get Request
-            req = f"{endpoint}?after={start}&before={stop}&filter=subreddit&size=1000"
+            req = f"{endpoint}?after={start}&before={stop}&filter=subreddit"
             ## Cycle Through Attempts
             backoff = self._backoff if hasattr(self, "_backoff") else 2
             retries = self._max_retries if hasattr(self, "_max_retries") else 3
@@ -899,12 +941,16 @@ class Reddit(object):
                                         start_date=None,
                                         end_date=None,
                                         history_type="comment",
-                                        docs_per_chunk=5000):
+                                        chunksize=None):
         """
         Args:
             subreddit (str): Subreddit of interest
-            start_date (str, isoformat or None): Start date or None for querying posts
-            end_date (str, isoformat or None): End date or None for querying posts
+            start_date (str or None): If str, expected
+                    to be parsed by pandas.to_datetime. None
+                    defaults to beginning of Reddit.
+            end_date (str or None):  If str, expected
+                    to be parse by pandas.to_datetime. None, 
+                    defaults to current date
             history_type (str): "comment" or "submission": Type of post to get author counts for
             docs_per_chunk (int): How many documents to retrieve at a time. Larger chunks means slower queries
                                  and higher potential failure rate.
@@ -916,6 +962,10 @@ class Reddit(object):
         ## Get Start/End Epochs
         start_epoch = self._get_start_date(start_date)
         end_epoch = self._get_end_date(end_date)
+        ## Chunk Queries into Time Periods
+        time_chunks = self._chunk_timestamps(start_epoch,
+                                             end_epoch,
+                                             chunksize)
         ## Endpoint
         if history_type == "comment":
             endpoint = self.api.search_comments
@@ -923,49 +973,21 @@ class Reddit(object):
             endpoint = self.api.search_submissions
         else:
             raise ValueError("history_type parameter must be either comment or submission")
-        ## Identify Number of Documents
-        backoff = self._backoff if hasattr(self, "_backoff") else 2
-        retries = self._max_retries if hasattr(self, "_max_retries") else 3
-        docs = None
-        for _ in range(retries):
-            try:
-                docs = endpoint(subreddit=subreddit,
-                                after=start_epoch,
-                                before=end_epoch,
-                                size=0,
-                                aggs="subreddit",
-                                filter=["id"])
-                doc_count = next(docs)["subreddit"]
-                if len(doc_count) == 0:
-                    return None
-                doc_count = doc_count[0]["doc_count"]
-                break
-            except Exception as e:
-                sleep(backoff)
-                backoff = 2 ** backoff
-        if docs is None:
-            return None
-        ## Create Uniform Time Chunks
-        n_chunks = doc_count // docs_per_chunk + 1
-        chunksize = (end_epoch-start_epoch) / n_chunks
-        date_range = [start_epoch]
-        while date_range[-1] < end_epoch:
-            date_range.append(date_range[-1]+chunksize)
-        date_range = list(map(int, date_range))
         ## Query Authors
         authors = Counter()
-        for start, stop in tqdm(zip(date_range[:-1], date_range[1:]), total=n_chunks, file=sys.stdout):
+        for start, stop in tqdm(zip(time_chunks[:-1], time_chunks[1:]), total=len(time_chunks)-1, file=sys.stdout):
             backoff = self._backoff if hasattr(self, "_backoff") else 2
             retries = self._max_retries if hasattr(self, "_max_retries") else 3
             for _ in range(retries):
                 try:
                     req = endpoint(subreddit=subreddit,
-                                after=start,
-                                before=stop,
-                                filter="author")
+                                   after=start,
+                                   before=stop,
+                                   filter="author")
                     resp = [a.author for a in req]
                     resp = list(filter(lambda i: i != "[deleted]" and i != "[removed]" and not i.lower().endswith("bot"), resp))
-                    authors += Counter(resp)
+                    ac = Counter(resp)
+                    authors += ac
                     break
                 except Exception as e:
                     sleep(backoff)
