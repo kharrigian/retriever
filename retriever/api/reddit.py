@@ -113,17 +113,17 @@ class Reddit(object):
             authenticated = self._authenticated(self._praw)
             ## Initialize Pushshift API around PRAW API
             if authenticated:
-                self.api = psaw_api(self._praw)
+                self.api = psaw_api(self._praw, max_results_per_request=100)
             else:
                 LOGGER.warning("Reddit API credentials invalid. Defaulting to Pushshift.io API")
                 self._init_praw = False
-                self.api = psaw_api()
+                self.api = psaw_api(max_results_per_request=100)
         else:
             ## Initialize API Objects
             if self._init_praw:
                 self._init_praw = False
                 LOGGER.warning("Reddit API credentials not detected. Defaulting to Pushshift.io API")
-            self.api = psaw_api()
+            self.api = psaw_api(max_results_per_request=100)
 
     def _authenticated(self,
                        reddit):
