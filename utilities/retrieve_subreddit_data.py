@@ -131,8 +131,7 @@ def main():
                                                                       start_date=dstart,
                                                                       end_date=dstop,
                                                                       limit=None,
-                                                                      cols=SUBMISSION_COLS,
-                                                                      chunksize=10000)
+                                                                      cols=SUBMISSION_COLS)
         submission_json = []
         if subreddit_submissions is not None and len(subreddit_submissions) > 0:
             submission_counts.append(len(subreddit_submissions))
