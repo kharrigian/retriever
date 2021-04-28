@@ -153,11 +153,11 @@ def main():
                                                                     random_state=args.random_state,
                                                                     replace=False).reset_index(drop=True).copy()
         link_ids = subreddit_submissions.loc[subreddit_submissions["num_comments"] > args.min_comments]["id"].tolist() 
+        link_ids = [l for l in link_ids if not os.path.exists(f"{SUBREDDIT_COMMENTS_DIR}{l}.json.gz")]
+        if len(link_ids) == 0:
+            continue
         link_id_chunks = list(chunks(link_ids, args.chunksize))
         for link_id_chunk in tqdm(link_id_chunks, desc="Submission Chunks", position=1, leave=False, file=sys.stdout):
-            link_id_chunk = [l for l in link_id_chunk if not os.path.exists(f"{SUBREDDIT_COMMENTS_DIR}{l}.json.gz")]
-            if len(link_id_chunk) == 0:
-                continue
             link_df = reddit.retrieve_submission_comments(link_id_chunk)
             for link_id in link_id_chunk:
                 link_json = []
