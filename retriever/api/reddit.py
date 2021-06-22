@@ -517,6 +517,7 @@ class Reddit(object):
                 metadata_clean = self._parse_metadata(metadata)
                 return metadata_clean
             except Exception as e:
+                LOGGER.warning(e)
                 sleep(backoff)
                 backoff = 2 ** backoff
     
@@ -580,6 +581,7 @@ class Reddit(object):
                         total += len(df)
                     break
                 except Exception as e:
+                    LOGGER.warning(e)
                     sleep(backoff)
                     backoff = 2 ** backoff
         if len(df_all) == 0:
@@ -624,12 +626,16 @@ class Reddit(object):
                     df = []
                     for s in submissions_clean:
                         df.append(self._retrieve_submission_comments_praw(submission_id=s))
+                    df = [d for d in df if d is not None]
+                    if len(df) > 0:
+                        df = pd.concat(df).reset_index(drop=True)
                 ## Sort
                 if len(df) > 0:
                     df = df.sort_values("created_utc", ascending=True)
                     df = df.reset_index(drop=True)
                 return df
             except Exception as e:
+                LOGGER.warning(e)
                 sleep(backoff)
                 backoff = 2 ** backoff
     
@@ -692,6 +698,7 @@ class Reddit(object):
                         total += len(df)
                     break
                 except Exception as e:
+                    LOGGER.warning(e)
                     sleep(backoff)
                     backoff = 2 ** backoff
         if len(df_all) == 0:
@@ -760,6 +767,7 @@ class Reddit(object):
                         total += len(df)
                     break
                 except Exception as e:
+                    LOGGER.warning(e)
                     sleep(backoff)
                     backoff = 2 ** backoff
         if len(df_all) == 0:
@@ -820,6 +828,7 @@ class Reddit(object):
                     df = df.reset_index(drop=True)
                 return df
             except Exception as e:
+                LOGGER.warning(e)
                 sleep(backoff)
                 backoff = 2 ** backoff
     
@@ -874,6 +883,7 @@ class Reddit(object):
                     df = df.reset_index(drop=True)
                 return df
             except Exception as e:
+                LOGGER.warning(e)
                 sleep(backoff)
                 backoff = 2 ** backoff
     
@@ -927,6 +937,7 @@ class Reddit(object):
                         sleep(backoff)
                         backoff = 2 ** backoff
                 except Exception as e:
+                    LOGGER.warning(e)
                     sleep(backoff)
                     backoff = 2 ** backoff
         ## Format
@@ -989,6 +1000,7 @@ class Reddit(object):
                     authors += ac
                     break
                 except Exception as e:
+                    LOGGER.warning(e)
                     sleep(backoff)
                     backoff = 2 ** backoff
         ## Format
