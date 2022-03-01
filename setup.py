@@ -12,7 +12,7 @@ with open("requirements.txt", "r") as r:
 ## Run Setup
 setup(
     name="retriever",
-    version="0.0.1",
+    version="0.0.2",
     author="Keith Harrigian",
     author_email="kharrigian@jhu.edu",
     description="Assorted API wrappers (and wrappers around wrappers)",

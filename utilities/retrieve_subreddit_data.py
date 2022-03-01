@@ -10,7 +10,7 @@ import sys
 import json
 import gzip
 import argparse
-from time import sleep
+from datetime import datetime
 
 ## External
 import pandas as pd
@@ -63,14 +63,15 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description="Query Reddit Submissions and Comments")
     ## Generic Arguments
     parser.add_argument("subreddit", type=str, help="Name of the subreddit to find submissions and comments for")
-    parser.add_argument("--start_date", type=str, default="2019-01-01", help="Start date for data")
-    parser.add_argument("--end_date", type=str, default="2020-08-01", help="End date for data")
+    parser.add_argument("--start_date", type=str, default=None, help="Start date for data")
+    parser.add_argument("--end_date", type=str, default=None, help="End date for data")
     parser.add_argument("--query_freq", type=str, default="7D", help="How to break up the submission query")
     parser.add_argument("--min_comments", type=int, default=0, help="Filtering criteria for querying comments based on submissions")
     parser.add_argument("--use_praw", action="store_true", default=False, help="Retrieve Official API data objects (at expense of query time) instead of Pushshift.io data")
     parser.add_argument("--chunksize", type=int, default=50, help="Number of submissions to query comments from simultaneously")
     parser.add_argument("--sample_percent", type=float, default=1, help="Submission sample percent (0, 1]")
     parser.add_argument("--random_state", type=int, default=42, help="Sample seed for any submission sampling")
+    parser.add_argument("--cache_empty", action="store_true", default=False, help="If included, will store empty comment files to skip next time around.")
     ## Parse Arguments
     args = parser.parse_args()
     return args
@@ -88,6 +89,11 @@ def get_date_range(start_date,
     """
 
     """
+    ## Update Defaults
+    if start_date is None:
+        start_date = "2015-01-01"
+    if end_date is None:
+        end_date = datetime.now().date().isoformat()
     ## Query Date Range
     DATE_RANGE = list(pd.date_range(start_date, end_date, freq=query_freq))
     if pd.to_datetime(start_date) < DATE_RANGE[0]:
@@ -163,7 +169,10 @@ def main():
                 link_json = []
                 link_file = f"{SUBREDDIT_COMMENTS_DIR}{link_id}.json.gz"
                 if link_df is None or len(link_df) == 0:
-                    pass
+                    if args.cache_empty:
+                        continue
+                    else:
+                        pass
                 else:
                     link_id_df = link_df.loc[link_df["link_id"]==f"t3_{link_id}"]
                     if link_id_df is not None and len(link_id_df) > 0:

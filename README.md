@@ -8,7 +8,7 @@ Questions or concerns? Feel free to reach out to Keith Harrigian at <kharrigian@
 
 ## Credentials
 
-Prior to installing the package, you should update the `retriever/config.json` file with official API credentials for the platforms you plan to query data from. For Reddit, credentials are not explicitly necessary if you only plan to use functionality associated with the Pushshift.io API. However, if you are interested in querying updated comment scores or any subreddit metadata, you will need to provide the library with credentials.
+Prior to installing the package, you should update the `retriever/config.json` file with official API credentials for the platforms you plan to query data from. For Reddit, credentials are not explicitly necessary if you only plan to use functionality associated with the Pushshift.io API. However, if you are interested in querying updated comment scores or any subreddit metadata, you will need to provide the library with credentials. The official API is also required to do a "fallback" search for comments in the case that Pushshift Shards are not working and/or other missing-data challenges emerge.
 
 ## Installation
 
