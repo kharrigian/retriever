@@ -5,7 +5,6 @@
 #####################
 
 ## Standard Libary
-import os
 import sys
 import json
 import pytz
@@ -16,7 +15,6 @@ from time import sleep
 from collections import Counter
 
 ## External Libaries
-import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from praw import Reddit as praw_api
@@ -24,7 +22,6 @@ from prawcore import ResponseException
 from psaw import PushshiftAPI as psaw_api
 
 ## Local
-from ..util.helpers import chunks
 from ..util.logging import get_logger
 
 #####################
@@ -105,6 +102,10 @@ class Reddit(object):
         
         Returns:
             None. Sets class api attribute.
+        
+        Raises:
+            prawcore.exceptions.OAuthException: invalid_grant error processing request: This will occur either because
+                                                credentials are incorrect, or you have enabled 2-factor authentication.
         """
         if hasattr(self, "_init_praw") and self._init_praw and CONFIG is not None:
             ## Initialize PRAW API
@@ -123,6 +124,13 @@ class Reddit(object):
             if self._init_praw:
                 self._init_praw = False
                 LOGGER.warning("Reddit API credentials not detected. Defaulting to Pushshift.io API")
+            ## Initialize for Fall-Back Queries
+            if CONFIG is not None:
+                self._praw = praw_api(**CONFIG)
+                authenticated = self._authenticated(self._praw)
+            else:
+                self._praw = None
+            ## Initialize PSAW
             self.api = psaw_api(max_results_per_request=100)
 
     def _authenticated(self,
@@ -363,25 +371,19 @@ class Reddit(object):
         response_formatted = []
         for r in request:
             r_data = {}
-            if not hasattr(self, "_init_praw") or not self._init_praw:
-                for d in data_vars:
-                    r_data[d] = None
-                    if hasattr(r, d):
-                        r_data[d] = getattr(r, d)
-            else:
-                for d in data_vars:
-                    r_data[d] = None
-                    if hasattr(r, d):
-                        d_obj = getattr(r, d)
-                        if d_obj is None:
-                            continue
-                        if d == "author":
-                            d_obj = d_obj.name
-                        if d == "created_utc":
-                            d_obj = int(d_obj)
-                        if d == "subreddit":
-                            d_obj = d_obj.display_name
-                        r_data[d] = d_obj
+            for d in data_vars:
+                r_data[d] = None
+                if hasattr(r, d):
+                    d_obj = getattr(r, d)
+                    if d_obj is None:
+                        continue
+                    if d == "author" and not isinstance(d_obj, str):
+                        d_obj = d_obj.name
+                    if d == "created_utc":
+                        d_obj = int(d_obj)
+                    if d == "subreddit" and not isinstance(d_obj,str):
+                        d_obj = d_obj.display_name
+                    r_data[d] = d_obj
             response_formatted.append(r_data)
         ## Format into DataFrame
         df = pd.DataFrame(response_formatted)
@@ -622,7 +624,7 @@ class Reddit(object):
                 ## Retrieve and Parse data
                 df = self._parse_psaw_comment_request(req)
                 ## Fall Back to PRAW
-                if hasattr(self, "_init_praw") and self._init_praw and len(df) == 0:
+                if len(df) == 0 and hasattr(self, "_praw") and self._praw is not None:
                     df = []
                     for s in submissions_clean:
                         df.append(self._retrieve_submission_comments_praw(submission_id=s))

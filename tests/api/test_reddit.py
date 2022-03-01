@@ -113,7 +113,7 @@ def test_retrieve_subreddit_submissions(reddit_psaw,
         assert isinstance(sub_praw, pd.DataFrame)
         assert sub_praw.columns.tolist() == sub_praw.columns.tolist()
         assert sub_praw.shape == sub_psaw.shape
-        assert len(set(sub_praw.created_utc) & set(sub_psaw.created_utc)) > 8
+        assert len(set(sub_praw.created_utc) & set(sub_psaw.created_utc)) == 8
         assert sub_praw.created_utc.tolist() == sorted(sub_praw.created_utc.values)
 
 def test_retrieve_submission_comments(reddit_psaw,
