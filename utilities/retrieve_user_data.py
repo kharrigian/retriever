@@ -13,6 +13,7 @@ be incomplete for some users, while overcomplete for others in the chunk.
 
 ## Standard Library
 import os
+import sys
 import json
 import gzip
 import argparse
@@ -141,7 +142,7 @@ def enumerate_users(inputs):
     ## Load Users
     usernames = Counter()
     with Pool(max(cpu_count() // 2, 1)) as mp:
-        for users in tqdm(mp.imap_unordered(_enumerate_users, input_filenames), total=len(input_filenames), desc="[Identifying Users]"):
+        for users in tqdm(mp.imap_unordered(_enumerate_users, input_filenames), total=len(input_filenames), desc="[Identifying Users]", file=sys.stdout):
             usernames.update(users)
     ## Sort
     usernames = [u[0] for u in usernames.most_common()[::-1]]
@@ -183,7 +184,7 @@ def query_user_data(users,
     ## Initialize Wrapper
     reddit = Reddit(init_praw=use_praw)
     ## Iterate Through Chunks
-    for n, n_users in tqdm(enumerate(users_chunks), total=len(users_chunks), desc="[Query Chunk]"):
+    for n, n_users in tqdm(enumerate(users_chunks), total=len(users_chunks), desc="[Query Chunk]", file=sys.stdout):
         ## Parse Chunk
         n_users_sub = [u[0] for u in n_users if u[1] is not None]
         n_users_com = [u[0] for u in n_users if u[2] is not None]
