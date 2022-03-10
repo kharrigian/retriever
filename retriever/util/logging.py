@@ -11,7 +11,7 @@ import logging
 ### Functions
 ########################
 
-def get_logger(level=logging.INFO):
+def get_logger(level=logging.WARNING):
     """
     Create a logger object for outputing
     to standard out
@@ -23,9 +23,9 @@ def get_logger(level=logging.INFO):
         logger (Logging object): Python logger
     """
     logger = logging.getLogger()
-    logger.setLevel(logging.INFO)
+    logger.setLevel(level)
     if not logger.hasHandlers():
         handler = logging.StreamHandler(sys.stdout)
-        handler.setLevel(logging.INFO)
+        handler.setLevel(level)
         logger.addHandler(handler)
     return logger

@@ -118,13 +118,13 @@ def main():
                                 args.end_date,
                                 args.query_freq)
     ## Create Output Directory
-    LOGGER.info(f"\nStarting Query for r/{args.subreddit}")
+    LOGGER.warning(f"\nStarting Query for r/{args.subreddit}")
     SUBREDDIT_OUTDIR = f"{OUTDIR}{args.subreddit}/"
     SUBREDDIT_SUBMISSION_OUTDIR = f"{SUBREDDIT_OUTDIR}submissions/"
     _ = create_dir(SUBREDDIT_OUTDIR)
     _ = create_dir(SUBREDDIT_SUBMISSION_OUTDIR)    
     ## Identify Submission Data
-    LOGGER.info("Pulling Submissions")
+    LOGGER.warning("Pulling Submissions")
     submission_files = []
     submission_counts = []
     for dstart, dstop in tqdm(list(zip(DATE_RANGE[:-1],DATE_RANGE[1:])), desc="Date Range", file=sys.stdout):
@@ -145,9 +145,9 @@ def main():
                 submission_json.append(json.loads(row.to_json()))
         with gzip.open(submission_file,"wt") as the_file:
             json.dump(submission_json, the_file)
-    LOGGER.info("Found {:,d} submissions".format(sum(submission_counts)))
+    LOGGER.warning("Found {:,d} submissions".format(sum(submission_counts)))
     ## Pull Comments
-    LOGGER.info("Pulling Comments")
+    LOGGER.warning("Pulling Comments")
     SUBREDDIT_COMMENTS_DIR = f"{SUBREDDIT_OUTDIR}comments/"
     _ = create_dir(SUBREDDIT_COMMENTS_DIR)
     for sub_file in tqdm(submission_files, desc="Date Range", position=0, leave=False, file=sys.stdout):
@@ -180,7 +180,7 @@ def main():
                             link_json.append(json.loads(row.to_json()))
                 with gzip.open(link_file,"wt") as the_file:
                     json.dump(link_json, the_file)
-    LOGGER.info("Script complete.")
+    LOGGER.warning("Script complete.")
 
 ####################
 ### Execute

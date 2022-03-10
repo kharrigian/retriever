@@ -75,7 +75,7 @@ def main():
         ## Statistics
         n_author_unique = len(ffilt["author"].unique())
         n_total = ffilt.shape[0]
-        LOGGER.info("{} Statistics: {:,d} Unique Authors, {:,d} Total Posts".format(ftype, n_author_unique, n_total))
+        LOGGER.warning("{} Statistics: {:,d} Unique Authors, {:,d} Total Posts".format(ftype, n_author_unique, n_total))
         ## Datetime Formatting
         ffilt["date"] = ffilt["created_utc"].map(datetime.fromtimestamp).map(lambda i: i.date())
         timestamps[ftype] = ffilt["date"]
