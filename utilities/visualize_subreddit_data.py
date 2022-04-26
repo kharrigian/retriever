@@ -45,6 +45,9 @@ def main():
     _ = parser.add_argument("--output_dir", type=str, default=None, help="Where to save the visualization. Default is None (no caching).")
     _ = parser.add_argument("--jobs", type=int, default=1, help="Number of processes to use for loading data.")
     args = parser.parse_args()
+    ## Output Directory
+    if args.output_dir is not None and not os.path.exists(args.output_dir):
+        _ = os.makedirs(args.output_dir)
     ## Filenames
     submission_files = glob("{}/{}/submissions/*.json.gz".format(args.data_dir, args.subreddit))
     comment_files = glob("{}/{}/comments/*.json.gz".format(args.data_dir, args.subreddit))
@@ -62,7 +65,8 @@ def main():
         LOGGER.warning("Warning: No data to plot. Exiting.")
         return None
     ## Summary Statistics
-    timestamps = {} 
+    timestamps = {}
+    data_agg = {}
     for f, ftype, ftext in zip([submissions_df, comments_df],["Submissions","Comments"],[["title","selftext"],["body"]]):
         ## Check
         if f is None:
@@ -79,6 +83,17 @@ def main():
         ## Datetime Formatting
         ffilt["date"] = ffilt["created_utc"].map(datetime.fromtimestamp).map(lambda i: i.date())
         timestamps[ftype] = ffilt["date"]
+        ## Aggregate Stats
+        ffilt_agg = ffilt[["date","author"]+ftext].copy()
+        ffilt_agg = ffilt_agg.groupby(["date"]).agg({"author":[lambda x: len(set(x)), len]})
+        ffilt_agg.columns = ["n_unique_users","n_posts"]
+        data_agg[ftype] = ffilt_agg
+    ## Format Aggregated Data
+    data_agg = pd.concat(data_agg)
+    data_agg = pd.merge(data_agg.loc["Submissions"], data_agg.loc["Comments"], left_index=True, right_index=True, how="outer", suffixes=("_submission","_comment"))
+    data_agg = data_agg.reindex(pd.date_range(data_agg.index.min(), data_agg.index.max())).fillna(0).astype(int)
+    if args.output_dir is not None:
+        _ = data_agg.to_csv(f"{args.output_dir}/{args.subreddit}.counts.csv",index=True)
     ## Distribution over Time
     fig, ax = plt.subplots(len(timestamps), 1, figsize=(12, 5), sharex=True)
     for j, (ftype, ftimestamp) in enumerate(timestamps.items()):
@@ -99,8 +114,6 @@ def main():
     fig.tight_layout()
     fig.subplots_adjust(left=0.075)
     if args.output_dir is not None:
-        if not os.path.exists(args.output_dir):
-            _ = os.makedirs(args.output_dir)
         fig.savefig(f"{args.output_dir}/{args.subreddit}.png", dpi=300)
     plt.show()
     
