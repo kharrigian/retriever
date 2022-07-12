@@ -68,6 +68,7 @@ def parse_arguments():
     parser.add_argument("--query_freq", type=str, default="7D", help="How to break up the submission query")
     parser.add_argument("--min_comments", type=int, default=0, help="Filtering criteria for querying comments based on submissions")
     parser.add_argument("--use_praw", action="store_true", default=False, help="Retrieve Official API data objects (at expense of query time) instead of Pushshift.io data")
+    parser.add_argument("--allow_praw", action="store_true", default=False, help="Allow use of PRAW (if available) when PSAW doesn't return any data.")
     parser.add_argument("--chunksize", type=int, default=50, help="Number of submissions to query comments from simultaneously")
     parser.add_argument("--sample_percent", type=float, default=1, help="Submission sample percent (0, 1]")
     parser.add_argument("--random_state", type=int, default=42, help="Sample seed for any submission sampling")
@@ -110,7 +111,7 @@ def main():
     ## Parse Arguments
     args = parse_arguments()
     ## Initialize Reddit API Wrapper
-    reddit = Reddit(args.use_praw)
+    reddit = Reddit(init_praw=args.use_praw, allow_praw=args.allow_praw)
     ## Create Output Directory
     _ = create_dir(OUTDIR)
     ## Get Date Range
@@ -152,27 +153,28 @@ def main():
     _ = create_dir(SUBREDDIT_COMMENTS_DIR)
     for sub_file in tqdm(submission_files, desc="Date Range", position=0, leave=False, file=sys.stdout):
         subreddit_submissions = pd.read_json(sub_file)
+        sub_file_start_date = os.path.basename(sub_file).split("_")[0]
         if len(subreddit_submissions) == 0:
             continue
         if args.sample_percent < 1:
             subreddit_submissions = subreddit_submissions.sample(frac=args.sample_percent,
                                                                     random_state=args.random_state,
                                                                     replace=False).reset_index(drop=True).copy()
-        link_ids = subreddit_submissions.loc[subreddit_submissions["num_comments"] > args.min_comments]["id"].tolist() 
+        link_ids = subreddit_submissions.loc[subreddit_submissions["num_comments"] >= args.min_comments]["id"].tolist() 
         link_ids = [l for l in link_ids if not os.path.exists(f"{SUBREDDIT_COMMENTS_DIR}{l}.json.gz")]
         if len(link_ids) == 0:
             continue
         link_id_chunks = list(chunks(link_ids, args.chunksize))
         for link_id_chunk in tqdm(link_id_chunks, desc="Submission Chunks", position=1, leave=False, file=sys.stdout):
-            link_df = reddit.retrieve_submission_comments(link_id_chunk)
+            link_df = reddit.retrieve_submission_comments(link_id_chunk, start_date=sub_file_start_date)
             for link_id in link_id_chunk:
                 link_json = []
                 link_file = f"{SUBREDDIT_COMMENTS_DIR}{link_id}.json.gz"
                 if link_df is None or len(link_df) == 0:
                     if args.cache_empty:
-                        continue
-                    else:
                         pass
+                    else:
+                        continue
                 else:
                     link_id_df = link_df.loc[link_df["link_id"]==f"t3_{link_id}"]
                     if link_id_df is not None and len(link_id_df) > 0:

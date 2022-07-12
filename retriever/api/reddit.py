@@ -23,6 +23,7 @@ from psaw import PushshiftAPI as psaw_api
 
 ## Local
 from ..util.logging import get_logger
+from ..util.helpers import chunks
 
 #####################
 ### Globals
@@ -54,7 +55,8 @@ class Reddit(object):
     def __init__(self,
                  init_praw=False,
                  max_retries=3,
-                 backoff=2):
+                 backoff=2,
+                 allow_praw=True):
         """
         Initialize a class to retrieve Reddit data based on
         use case and format into friendly dataframes.
@@ -69,14 +71,19 @@ class Reddit(object):
             backoff (int): Baseline number of seconds between failed 
                            query attempts. Increases exponentially with
                            each failed query attempt
+            allow_praw (bool): If True (default) and PRAW available,
+             will fallback to using PRAW if not data detected using PSAW.
         
         Returns:
             None
         """
         ## Class Attributes
         self._init_praw = init_praw
+        self._allow_praw = allow_praw
         self._max_retries = max_retries
         self._backoff = backoff
+        ## Class Working Variables
+        self._last_req = None
         ## Initialize APIs
         self._initialize_api_wrappers()
     
@@ -383,6 +390,11 @@ class Reddit(object):
                         d_obj = int(d_obj)
                     if d == "subreddit" and not isinstance(d_obj,str):
                         d_obj = d_obj.display_name
+                    if d == "link_id" and not isinstance(d_obj, str) and hasattr(r, "permalink"):
+                        d_obj = getattr(r, "permalink")
+                        if d_obj is not None:
+                            d_obj = d_obj.split("/comments/")[1].split("/")[0]
+                    ## NOTE: As of July 12, 2022 - link_id, author_fullname, and parent_id are not returned in appropriate format  for some data
                     r_data[d] = d_obj
             response_formatted.append(r_data)
         ## Format into DataFrame
@@ -593,17 +605,98 @@ class Reddit(object):
             df_all = df_all.iloc[:limit].copy()
         return df_all
     
+    def _retrieve_submission_comments(self,
+                                      submission,
+                                      comment_ids=[],
+                                      start_date=None,
+                                      end_date=None,
+                                      last_req=None,
+                                      wait_time=2,
+                                      max_attempts=3,
+                                      backoff=2):
+        """
+        Recursive identification of comment IDs for a submission
+        """
+        ## Start/End Date
+        if start_date is None:
+            start_date = self._get_start_date(None)
+        if end_date is None:
+            end_date = self._get_end_date(None)
+        ## Submission Formatting
+        if isinstance(submission, str):
+            submission = [submission]
+        submission = list(map(lambda i: i if not i.startswith("t3_") else i[3:], submission))
+        submission = ",".join(submission)
+        ## Format Query
+        search_req = f"https://api.pushshift.io/reddit/comment/search/?size=100&fields=id&q=*&link_id={submission}&before={end_date}&after={start_date}"
+        ## Waiting (For Rate Limiting)
+        if last_req is None and self._last_req is not None:
+            last_req = self._last_req
+        if last_req is not None:
+            since_last = (datetime.datetime.now()-last_req).total_seconds()
+            _ = sleep(max(0, wait_time - since_last))
+        ## Track Last Request Time (Class Wide)
+        last_req = datetime.datetime.now()
+        self._last_req = last_req
+        ## Execute Query
+        attempted = 0
+        attempt_wait = wait_time
+        while True:
+            ## Check Exit Criteria
+            if attempted == max_attempts:
+                LOGGER.warning("Comment ID warning: Collection stopped after {} attempts.".format(max_attempts))
+                return list(set(comment_ids))
+            ## Make Request
+            resp = requests.get(search_req)
+            if resp.status_code != 200:
+                ## Too many requests (Backoff Silently)
+                if resp.status_code == 429:
+                    attempted += 1
+                    attempt_wait = attempt_wait * backoff
+                    _ = sleep(attempt_wait)
+                ## Something Else (Exit)
+                else:
+                    LOGGER.warning("Comment ID warning: Got Non 200 Request Code {}: {}".format(resp.status_code, resp.reason))
+                    return list(set(comment_ids))
+            else:
+                ## Success
+                break
+        ## Get Data
+        resp_ids = [i.get("id") for i in resp.json()["data"]]
+        ## Case 1: Fewer than Limit Returned
+        if len(resp_ids) < 100:
+            comment_ids.extend(resp_ids)
+        ## Case 2: More Than Limit Returned, Break Up (Binary Search)
+        else:
+            date_bounds = [start_date, int((start_date+end_date)/2), end_date]
+            for dstart, dend in zip(date_bounds[:-1], date_bounds[1:]):
+                _ = self._retrieve_submission_comments(submission=submission,
+                                                       comment_ids=comment_ids,
+                                                       start_date=dstart,
+                                                       end_date=dend,
+                                                       wait_time=wait_time,
+                                                       last_req=last_req)
+        ## Return
+        return list(set(comment_ids))
+    
     def retrieve_submission_comments(self,
-                                     submission):
+                                     submission,
+                                     start_date=None,
+                                     end_date=None):
         """
         Retrieve comments for a particular submission
 
         Args:
             submission (str): Canonical name of the submission
+            start_date (str): Lower date boundary (helpful for large submissions)
+            end_date (str): Upper date boundary
 
         Returns:
             df (pandas dataframe): Comment search data
         """
+        ## Get Start/End Epochs
+        start_epoch = self._get_start_date(start_date)
+        end_epoch = self._get_end_date(end_date)
         ## ID Extraction
         if not isinstance(submission, list):
             submission = [submission]
@@ -614,32 +707,96 @@ class Reddit(object):
             if s.startswith("t3_"):
                 s = s.replace("t3_","")
             submissions_clean.append(s)
-        ## Make Query Attempt
-        backoff = self._backoff if hasattr(self, "_backoff") else 2
-        retries = self._max_retries if hasattr(self, "_max_retries") else 3
-        for _ in range(retries):
-            try:
-                ## Construct Call
-                req = self.api.search_comments(link_id=[f"t3_{s}" for s in submissions_clean])
-                ## Retrieve and Parse data
-                df = self._parse_psaw_comment_request(req)
-                ## Fall Back to PRAW
-                if len(df) == 0 and hasattr(self, "_praw") and self._praw is not None:
-                    df = []
-                    for s in submissions_clean:
-                        df.append(self._retrieve_submission_comments_praw(submission_id=s))
-                    df = [d for d in df if d is not None]
-                    if len(df) > 0:
-                        df = pd.concat(df).reset_index(drop=True)
-                ## Sort
-                if len(df) > 0:
-                    df = df.sort_values("created_utc", ascending=True)
-                    df = df.reset_index(drop=True)
-                return df
-            except Exception as e:
-                LOGGER.warning(e)
-                sleep(backoff)
-                backoff = 2 ** backoff
+        ## PSAW Init
+        if not self._init_praw or self._init_praw and (hasattr(self, "_praw") and self._praw is None):
+            ## Retrieve Comment IDs
+            comment_ids = self._retrieve_submission_comments(submissions_clean,
+                                                             start_date=start_epoch,
+                                                             end_date=end_epoch,
+                                                             wait_time=2,
+                                                             backoff=4)
+            ## Retrieve Comments
+            comment_data = []
+            for ids_chunk in chunks(comment_ids, 100): ## Note this is a limit set by Pushshift
+                ## Init Request
+                dreq = self.api.search_comments(ids=ids_chunk, metadata=True, limit=100)
+                ## Parse Request
+                dreq_df = self._parse_psaw_comment_request(dreq)
+                ## Check Parse and Cache
+                if dreq_df is not None and len(dreq_df) > 0:
+                    comment_data.append(dreq_df)
+            ## Merge and Format
+            if len(comment_data) > 0:
+                comment_data = pd.concat(comment_data, axis=0, sort=False)
+                comment_data = comment_data.sort_values("created_utc", ascending=True)
+                comment_data = comment_data.reset_index(drop=True)
+            ## Try to Fill Missing Data with PRAW
+            missing_submissions = list(set(submissions_clean) - set(comment_data["link_id"]))
+        else:
+            ## Init Cache Vars
+            comment_data = []
+            missing_submissions = submissions_clean
+        ## Fall Back to PRAW
+        if len(missing_submissions) > 0 and hasattr(self, "_praw") and self._praw is not None and self._allow_praw:
+            ## Iterate through missing
+            comment_data_praw = []
+            for s in missing_submissions:
+                comment_data_praw.append(self._retrieve_submission_comments_praw(submission_id=s))
+            ## Filter
+            comment_data_praw = list(filter(lambda d: d is not None, comment_data_praw))
+            ## Format
+            if len(comment_data_praw) > 0:
+                comment_data_praw = pd.concat(comment_data_praw).reset_index(drop=True)
+            ## Merge
+            if len(comment_data) > 0 and len(comment_data_praw) > 0:
+                comment_data = pd.concat([comment_data, comment_data_praw], axis=0)
+            elif len(comment_data) > 0 and len(comment_data_praw) == 0:
+                pass
+            elif len(comment_data) == 0 and len(comment_data_praw) > 0:
+                comment_data = comment_data_praw
+            elif len(comment_data) == 0 and len(comment_data_praw) == 0:
+                pass
+            ## Sort
+            comment_data = comment_data.sort_values("created_utc",ascending=True)
+            comment_data = comment_data.reset_index(drop=True)
+        ## Deduplicate
+        if len(comment_data) > 0:
+            comment_data = comment_data.drop_duplicates(subset=["id"],keep="last").reset_index(drop=True)
+        ## Return
+        return comment_data
+        
+        ## NOTE: The commented code is temporarily deprecated (as of July 12, 2022) due to issues with Pushshift.
+        # ## Extra Query Args
+        # query_kwargs = {
+        #     "before":end_epoch,
+        #     "after":start_epoch
+        # }
+        # ## Make Query Attempt
+        # backoff = self._backoff if hasattr(self, "_backoff") else 2
+        # retries = self._max_retries if hasattr(self, "_max_retries") else 3
+        # for _ in range(retries):
+        #     try:
+        #         ## Construct Call
+        #         req = self.api.search_comments(link_id=[f"t3_{s}" for s in submissions_clean], **query_kwargs)
+        #         ## Retrieve and Parse data
+        #         df = self._parse_psaw_comment_request(req)
+        #         ## Fall Back to PRAW
+        #         if len(df) == 0 and hasattr(self, "_praw") and self._praw is not None and self._allow_praw:
+        #             df = []
+        #             for s in submissions_clean:
+        #                 df.append(self._retrieve_submission_comments_praw(submission_id=s))
+        #             df = [d for d in df if d is not None]
+        #             if len(df) > 0:
+        #                 df = pd.concat(df).reset_index(drop=True)
+        #         ## Sort
+        #         if len(df) > 0:
+        #             df = df.sort_values("created_utc", ascending=True)
+        #             df = df.reset_index(drop=True)
+        #         return df
+        #     except Exception as e:
+        #         LOGGER.warning(e)
+        #         sleep(backoff)
+        #         backoff = 2 ** backoff
     
     def retrieve_author_comments(self,
                                  author,
