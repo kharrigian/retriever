@@ -72,7 +72,7 @@ def main():
         if f is None:
             continue
         ## Get Filters
-        text_mask = ~ (f[ftext].fillna("").apply(lambda i: " ".join(i), axis=1).map(lambda i: i.strip() == "[deleted]" or i.strip() == "[removed]" or len(i.strip()) == 0))
+        text_mask = ~ (f[ftext].fillna("").astype(str).apply(lambda i: " ".join(i), axis=1).map(lambda i: i.strip() == "[deleted]" or i.strip() == "[removed]" or len(i.strip()) == 0))
         author_mask = ~ (f["author"].map(lambda i: i == "[deleted]" or i == "[removed]" or i == "AutoModerator"))
         ## Apply Filter
         ffilt = f.loc[pd.concat([text_mask, author_mask],axis=1).all(axis=1)].reset_index(drop=True)

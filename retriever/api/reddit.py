@@ -11,8 +11,12 @@ import pytz
 import pkgutil
 import datetime
 import requests
+import warnings
 from time import sleep
 from collections import Counter
+
+## Warning Handling (Unnecessary UserWarnings in PSAW)
+warnings.simplefilter("ignore", UserWarning)
 
 ## External Libaries
 import pandas as pd
@@ -731,7 +735,10 @@ class Reddit(object):
                 comment_data = comment_data.sort_values("created_utc", ascending=True)
                 comment_data = comment_data.reset_index(drop=True)
             ## Try to Fill Missing Data with PRAW
-            missing_submissions = list(set(submissions_clean) - set(comment_data["link_id"]))
+            if isinstance(comment_data, list):
+                missing_submissions = submissions_clean
+            else:
+                missing_submissions = list(set(submissions_clean) - set(comment_data["link_id"]))
         else:
             ## Init Cache Vars
             comment_data = []
