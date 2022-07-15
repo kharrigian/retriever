@@ -607,6 +607,9 @@ class Reddit(object):
         df_all = pd.concat(df_all).reset_index(drop=True)
         if limit is not None and len(df_all) > limit:
             df_all = df_all.iloc[:limit].copy()
+        # Limit to specified columns
+        if cols:
+            df_all = df_all.loc[:, [c for c in cols if c in df_all.columns]] 
         return df_all
     
     def _retrieve_submission_comments(self,
