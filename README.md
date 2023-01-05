@@ -4,7 +4,7 @@ A wrapper for API wrappers. Currently supports Reddit (via `praw` and `psaw`).
 
 ## Status
 
-**Warning**: As of September 27, 2022, many of the normal Pushshift API endpoints are non-functional or exhibit unexpected behavior. At this time it is recommended to avoid using the API and instead use the file dumps if possible. If you do use this API, please do so at your own risk and make sure to validate the behavior you see is what you would expect.
+**Warning**: As of January 1, 2023, this package is no longer functional due to changes to PSAW and Reddit APIs. Until a complete refactor is addressed, individuals should discontinue use of this package. In the meantime, I recommend using the monthly dumps of data available from Pushshift.io; they do not have the same limitations with rate limiting and server downtime.
 
 ## Contact
 
