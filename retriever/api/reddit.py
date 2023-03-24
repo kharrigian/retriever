@@ -15,7 +15,7 @@ import warnings
 from time import sleep
 from collections import Counter
 
-## Warning Handling (Unnecessary UserWarnings in PSAW)
+## Warning Handling (Unnecessary UserWarnings in PMAW)
 warnings.simplefilter("ignore", UserWarning)
 
 ## External Libaries
@@ -23,7 +23,7 @@ import pandas as pd
 from tqdm import tqdm
 from praw import Reddit as praw_api
 from prawcore import ResponseException
-from psaw import PushshiftAPI as psaw_api
+from pmaw import PushshiftAPI as pmaw_api
 
 ## Local
 from ..util.logging import get_logger
@@ -33,8 +33,11 @@ from ..util.helpers import chunks
 ### Globals
 #####################
 
+## Maximum Number of Results Returnable by Pushshift
+MAX_PER_REQUEST = 1000
+
 ## Default Maximum Number of Results
-REQUEST_LIMIT = 100000
+DEFAULT_REQUEST_LIMIT = 100
 
 ## Logging
 LOGGER = get_logger()
@@ -53,7 +56,7 @@ except FileNotFoundError:
 class Reddit(object):
 
     """
-    Reddit Data Retrieval via PSAW and PRAW (optionally)
+    Reddit Data Retrieval via PMAW and PRAW (optionally)
     """
 
     def __init__(self,
@@ -76,7 +79,7 @@ class Reddit(object):
                            query attempts. Increases exponentially with
                            each failed query attempt
             allow_praw (bool): If True (default) and PRAW available,
-             will fallback to using PRAW if not data detected using PSAW.
+             will fallback to using PRAW if not data detected using PMAW.
         
         Returns:
             None
@@ -88,6 +91,7 @@ class Reddit(object):
         self._backoff = backoff
         ## Class Working Variables
         self._last_req = None
+        self._endpoint = "https://api.pushshift.io/reddit"
         ## Initialize APIs
         self._initialize_api_wrappers()
     
@@ -106,7 +110,7 @@ class Reddit(object):
 
     def _initialize_api_wrappers(self):
         """
-        Initialize API Wrappers (PRAW and/or PSAW)
+        Initialize API Wrappers (PRAW and/or PMAW)
 
         Args:
             None
@@ -125,24 +129,24 @@ class Reddit(object):
             authenticated = self._authenticated(self._praw)
             ## Initialize Pushshift API around PRAW API
             if authenticated:
-                self.api = psaw_api(self._praw, max_results_per_request=100)
+                self.api = pmaw_api(praw=self._praw)
             else:
-                LOGGER.warning("Reddit API credentials invalid. Defaulting to Pushshift.io API")
+                LOGGER.warning("WARNING: Reddit API credentials invalid. Defaulting to Pushshift.io API")
                 self._init_praw = False
-                self.api = psaw_api(max_results_per_request=100)
+                self.api = pmaw_api()
         else:
             ## Initialize API Objects
             if self._init_praw:
                 self._init_praw = False
-                LOGGER.warning("Reddit API credentials not detected. Defaulting to Pushshift.io API")
+                LOGGER.warning("WARNING: Reddit API credentials not detected. Defaulting to Pushshift.io API")
             ## Initialize for Fall-Back Queries
-            if CONFIG is not None:
+            if CONFIG is not None and self._allow_praw:
                 self._praw = praw_api(**CONFIG)
                 authenticated = self._authenticated(self._praw)
             else:
                 self._praw = None
-            ## Initialize PSAW
-            self.api = psaw_api(max_results_per_request=100)
+            ## Initialize PMAW
+            self.api = pmaw_api()
 
     def _authenticated(self,
                        reddit):
@@ -152,14 +156,16 @@ class Reddit(object):
         Args:
             reddit (PRAW instance): Initialize instance
         """
+        ## Default
+        auth = True
+        ## Make Authentication Attempt
         try:
             reddit.user.me()
         except ResponseException:
-            return False
-        else:
-            return True
+            auth = False
+        ## Return Status
+        return auth
                     
-
     def _get_start_date(self,
                         start_date_iso=None):
         """
@@ -173,10 +179,13 @@ class Reddit(object):
         Returns:
             start_epoch (int): Start date in form of epoch
         """
+        ## If Necessary, Use Default Start Date
         if start_date_iso is None:
             start_date_iso = "2005-08-01"
+        ## Parse and Localize
         start_date_dt = pd.to_datetime(start_date_iso)
         start_date_dt = pytz.utc.localize(start_date_dt)
+        ## Translate to Epoch
         start_epoch = int(start_date_dt.timestamp())
         return start_epoch
     
@@ -193,11 +202,13 @@ class Reddit(object):
         Returns:
             end_epoch (int): End date in form of epoch
         """
+        ## If Necessary, Use Tomorrow as Default End Date
         if end_date_iso is None:
-            end_date_iso = (datetime.datetime.now().date() + \
-                            datetime.timedelta(1)).isoformat()
+            end_date_iso = (datetime.datetime.now().date() + datetime.timedelta(1)).isoformat()
+        ## Parse and Localize
         end_date_dt = pd.to_datetime(end_date_iso)
         end_date_dt = pytz.utc.localize(end_date_dt)
+        ## Translate to Epoch
         end_epoch = int(end_date_dt.timestamp())
         return end_epoch
     
@@ -253,7 +264,7 @@ class Reddit(object):
                 time_chunks.append(min(time_chunks[-1] + time_chunksize, end_epoch))
         return time_chunks
     
-    def _parse_psaw_submission_request(self,
+    def _parse_pmaw_submission_request(self,
                                        request):
         """
         Retrieve submission search data and format into 
@@ -311,25 +322,8 @@ class Reddit(object):
         response_formatted = []
         for r in request:
             r_data = {}
-            if not hasattr(self, "_init_praw") or not self._init_praw:
-                for d in data_vars:
-                    r_data[d] = None
-                    if hasattr(r, d):
-                        r_data[d] = getattr(r, d)
-            else:
-                for d in data_vars:
-                    r_data[d] = None
-                    if hasattr(r, d):
-                        d_obj = getattr(r, d)
-                        if d_obj is None:
-                            continue
-                        if d == "author":
-                            d_obj = d_obj.name
-                        if d == "created_utc":
-                            d_obj = int(d_obj)
-                        if d == "subreddit":
-                            d_obj = d_obj.display_name
-                        r_data[d] = d_obj
+            for d in data_vars:
+                r_data[d] = r.get(d, None)
             response_formatted.append(r_data)
         ## Format into DataFrame
         df = pd.DataFrame(response_formatted)
@@ -338,7 +332,7 @@ class Reddit(object):
             df = df.reset_index(drop=True)
         return df
     
-    def _parse_psaw_comment_request(self,
+    def _parse_pmaw_comment_request(self,
                                     request):
         """
         Retrieve comment search data and format into 
@@ -384,22 +378,24 @@ class Reddit(object):
             r_data = {}
             for d in data_vars:
                 r_data[d] = None
-                if hasattr(r, d):
+                if isinstance(r, dict):
+                    d_obj = r.get(d)
+                else:
                     d_obj = getattr(r, d)
-                    if d_obj is None:
-                        continue
-                    if d == "author" and not isinstance(d_obj, str):
-                        d_obj = d_obj.name
-                    if d == "created_utc":
-                        d_obj = int(d_obj)
-                    if d == "subreddit" and not isinstance(d_obj,str):
-                        d_obj = d_obj.display_name
-                    if d == "link_id" and not isinstance(d_obj, str) and hasattr(r, "permalink"):
-                        d_obj = getattr(r, "permalink")
-                        if d_obj is not None:
-                            d_obj = d_obj.split("/comments/")[1].split("/")[0]
-                    ## NOTE: As of July 12, 2022 - link_id, author_fullname, and parent_id are not returned in appropriate format  for some data
-                    r_data[d] = d_obj
+                if d_obj is None:
+                    continue
+                if d == "author" and not isinstance(d_obj, str):
+                    d_obj = d_obj.name
+                if d == "created_utc":
+                    d_obj = int(d_obj)
+                if d == "subreddit" and not isinstance(d_obj,str):
+                    d_obj = d_obj.display_name
+                if d == "link_id" and not isinstance(d_obj, str) and hasattr(r, "permalink"):
+                    d_obj = getattr(r, "permalink")
+                    if d_obj is not None:
+                        d_obj = d_obj.split("/comments/")[1].split("/")[0]
+                ## NOTE: As of July 12, 2022 - link_id, author_fullname, and parent_id are not returned in appropriate format  for some data
+                r_data[d] = d_obj
             response_formatted.append(r_data)
         ## Format into DataFrame
         df = pd.DataFrame(response_formatted)
@@ -455,8 +451,10 @@ class Reddit(object):
         commentsList = [c for c in commentsList if "MoreComments" not in str(type(c))]
         ## Parse
         if len(commentsList) > 0:
-            comment_df = self._parse_psaw_comment_request(commentsList)
+            comment_df = self._parse_pmaw_comment_request(commentsList)
             return comment_df
+        ## Return Null
+        return None
     
     def _parse_metadata(self,
                         metadata):
@@ -507,25 +505,28 @@ class Reddit(object):
                             "whitelist_status",
                             "url",
                             "created_utc"]
-        metadata = dict((c, metadata[c]) for c in metadata_columns)
+        metadata = {c:metadata.get(c,None) for c in metadata_columns}
         return metadata
                           
     def retrieve_subreddit_metadata(self,
                                     subreddit):
         """
-        Retrive metadata for a given subreddit (e.g. subscribers, description)
+        Retrieve metadata for a given subreddit (e.g. subscribers, description)
 
         Args:
             subreddit (str): Name of the subreddit
         
         Returns:
-            metadata_clean (dict): Dictioanry of metadata for the subreddit
+            metadata_clean (dict): Dictionary of metadata for the subreddit
         """
         ## Validate Configuration
         if not self._init_praw:
             raise ValueError("Must have initialized class with PRAW to access subreddit metadata")
-        ## Load Object and Fetch Metadata
+        ## Reset Backoff
         backoff = self._backoff if hasattr(self, "_backoff") else 2
+        ## Default Output
+        metadata_clean = None
+        ## Load Object and Fetch Metadata
         for _ in range(self._max_retries):
             try:
                 sub = self._praw.subreddit(subreddit)
@@ -533,17 +534,20 @@ class Reddit(object):
                 ## Parse
                 metadata = vars(sub)
                 metadata_clean = self._parse_metadata(metadata)
-                return metadata_clean
+                ## Success: Exit
+                break
             except Exception as e:
                 LOGGER.warning(e)
                 sleep(backoff)
                 backoff = 2 ** backoff
+        ## Return
+        return metadata_clean
     
     def retrieve_subreddit_submissions(self,
                                        subreddit,
                                        start_date=None,
                                        end_date=None,
-                                       limit=REQUEST_LIMIT,
+                                       limit=DEFAULT_REQUEST_LIMIT,
                                        cols=None,
                                        chunksize=None):
         """
@@ -572,42 +576,59 @@ class Reddit(object):
         time_chunks = self._chunk_timestamps(start_epoch,
                                              end_epoch,
                                              chunksize)
-        ## Make Query Attempt
-        df_all = []
+        ## Rest Backoff and Retries
         backoff = self._backoff if hasattr(self, "_backoff") else 2
         retries = self._max_retries if hasattr(self, "_max_retries") else 3
+        ## Make Query Attempt
         total = 0
+        df_all = []
         for tcstart, tcstop in zip(time_chunks[:-1], time_chunks[1:]):
+            ## Case 0: Limit Reached
             if limit is not None and total >= limit:
                 break
+            ## Case 1: Attempt Until Retry Limit Reached
             for _ in range(retries):
                 try:
                     ## Construct Call
-                    query_params = dict(after=tcstart,
-                                        before=tcstop+1,
-                                        subreddit=subreddit,
-                                        limit=limit)
+                    query_params = {
+                        "since":tcstart,
+                        "until":tcstop+1,
+                        "subreddit":subreddit,
+                        "limit":min(limit, MAX_PER_REQUEST) if limit is not None else MAX_PER_REQUEST,
+                    }
                     if cols is not None:
                         query_params["filter"] = cols
+                    ## Make Request
                     req = self.api.search_submissions(**query_params)
-                    ## Retrieve and Parse Data
-                    df = self._parse_psaw_submission_request(req)
+                    ## Retrieve
+                    df = self._parse_pmaw_submission_request(req)
+                    ## Format 
                     if len(df) > 0:
+                        ## Format
                         df = df.sort_values("created_utc", ascending=True)
                         df = df.reset_index(drop=True)
+                        ## Cache
                         df_all.append(df)
+                        ## Update Count
                         total += len(df)
+                        ## Length Limit Warning
+                        if df.shape[0] == MAX_PER_REQUEST:
+                            LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(tcstart, tcstop))
+                    ## Success: Break
                     break
                 except Exception as e:
                     LOGGER.warning(e)
                     sleep(backoff)
                     backoff = 2 ** backoff
+        ## Length Check
         if len(df_all) == 0:
-            return
+            return None
+        ## Concatenate
         df_all = pd.concat(df_all).reset_index(drop=True)
+        ## Reduce
         if limit is not None and len(df_all) > limit:
             df_all = df_all.iloc[:limit].copy()
-        # Limit to specified columns
+        ## Limit to specified columns
         if cols:
             df_all = df_all.loc[:, [c for c in cols if c in df_all.columns]] 
         return df_all
@@ -620,7 +641,8 @@ class Reddit(object):
                                       last_req=None,
                                       wait_time=2,
                                       max_attempts=3,
-                                      backoff=2):
+                                      backoff=2,
+                                      convert_id_to_int=True):
         """
         Recursive identification of comment IDs for a submission
         """
@@ -633,9 +655,13 @@ class Reddit(object):
         if isinstance(submission, str):
             submission = [submission]
         submission = list(map(lambda i: i if not i.startswith("t3_") else i[3:], submission))
+        ## Temporary -- Need to convert to base 10 due to Pushshift Conversion Issues
+        if convert_id_to_int:
+            submission = list(map(lambda i: str(int(i, 36)), submission))
+        ## Merge Submissions
         submission = ",".join(submission)
         ## Format Query
-        search_req = f"https://api.pushshift.io/reddit/comment/search/?size=100&fields=id&q=*&link_id={submission}&before={end_date}&after={start_date}"
+        search_req = f"{self._endpoint}/comment/search/?size=100&fields=id&q=*&link_id={submission}&until={end_date}&since={start_date}"
         ## Waiting (For Rate Limiting)
         if last_req is None and self._last_req is not None:
             last_req = self._last_req
@@ -651,10 +677,11 @@ class Reddit(object):
         while True:
             ## Check Exit Criteria
             if attempted == max_attempts:
-                LOGGER.warning("Comment ID warning: Collection stopped after {} attempts.".format(max_attempts))
+                LOGGER.warning("WARNING: Comment ID warning: Collection stopped after {} attempts.".format(max_attempts))
                 return list(set(comment_ids))
             ## Make Request
             resp = requests.get(search_req)
+            ## Parse Request
             if resp.status_code != 200:
                 ## Too many requests (Backoff Silently)
                 if resp.status_code == 429:
@@ -663,7 +690,7 @@ class Reddit(object):
                     _ = sleep(attempt_wait)
                 ## Something Else (Exit)
                 else:
-                    LOGGER.warning("Comment ID warning: Got Non 200 Request Code {}: {}".format(resp.status_code, resp.reason))
+                    LOGGER.warning("WARNING: Comment ID warning: Got Non 200 Request Code {}: {}".format(resp.status_code, resp.reason))
                     return list(set(comment_ids))
             else:
                 ## Success
@@ -675,14 +702,18 @@ class Reddit(object):
             comment_ids.extend(resp_ids)
         ## Case 2: More Than Limit Returned, Break Up (Binary Search)
         else:
+            ## Split Date Range in Half
             date_bounds = [start_date, int((start_date+end_date)/2), end_date]
+            ## Query Each Range Separately and Recursively
             for dstart, dend in zip(date_bounds[:-1], date_bounds[1:]):
+                ## Run Search
                 _ = self._retrieve_submission_comments(submission=submission,
                                                        comment_ids=comment_ids,
                                                        start_date=dstart,
                                                        end_date=dend,
                                                        wait_time=wait_time,
-                                                       last_req=last_req)
+                                                       last_req=last_req,
+                                                       convert_id_to_int=False)
         ## Return
         return list(set(comment_ids))
     
@@ -714,21 +745,25 @@ class Reddit(object):
             if s.startswith("t3_"):
                 s = s.replace("t3_","")
             submissions_clean.append(s)
-        ## PSAW Init
+        ## Init Cache
+        comment_data = []
+        missing_submissions = submissions_clean
+        ## PMAW Search
         if not self._init_praw or self._init_praw and (hasattr(self, "_praw") and self._praw is None):
             ## Retrieve Comment IDs
             comment_ids = self._retrieve_submission_comments(submissions_clean,
                                                              start_date=start_epoch,
                                                              end_date=end_epoch,
                                                              wait_time=2,
-                                                             backoff=4)
+                                                             backoff=4,
+                                                             convert_id_to_int=True)
             ## Retrieve Comments
             comment_data = []
             for ids_chunk in chunks(comment_ids, 100): ## Note this is a limit set by Pushshift
                 ## Init Request
                 dreq = self.api.search_comments(ids=ids_chunk, metadata=True, limit=100)
                 ## Parse Request
-                dreq_df = self._parse_psaw_comment_request(dreq)
+                dreq_df = self._parse_pmaw_comment_request(dreq)
                 ## Check Parse and Cache
                 if dreq_df is not None and len(dreq_df) > 0:
                     comment_data.append(dreq_df)
@@ -737,15 +772,11 @@ class Reddit(object):
                 comment_data = pd.concat(comment_data, axis=0, sort=False)
                 comment_data = comment_data.sort_values("created_utc", ascending=True)
                 comment_data = comment_data.reset_index(drop=True)
-            ## Try to Fill Missing Data with PRAW
+            ## Determine Which Submissions Don't Have any Comments
             if isinstance(comment_data, list):
                 missing_submissions = submissions_clean
             else:
                 missing_submissions = list(set(submissions_clean) - set(comment_data["link_id"]))
-        else:
-            ## Init Cache Vars
-            comment_data = []
-            missing_submissions = submissions_clean
         ## Fall Back to PRAW
         if len(missing_submissions) > 0 and hasattr(self, "_praw") and self._praw is not None and self._allow_praw:
             ## Iterate through missing
@@ -774,45 +805,12 @@ class Reddit(object):
             comment_data = comment_data.drop_duplicates(subset=["id"],keep="last").reset_index(drop=True)
         ## Return
         return comment_data
-        
-        ## NOTE: The commented code is temporarily deprecated (as of July 12, 2022) due to issues with Pushshift.
-        # ## Extra Query Args
-        # query_kwargs = {
-        #     "before":end_epoch,
-        #     "after":start_epoch
-        # }
-        # ## Make Query Attempt
-        # backoff = self._backoff if hasattr(self, "_backoff") else 2
-        # retries = self._max_retries if hasattr(self, "_max_retries") else 3
-        # for _ in range(retries):
-        #     try:
-        #         ## Construct Call
-        #         req = self.api.search_comments(link_id=[f"t3_{s}" for s in submissions_clean], **query_kwargs)
-        #         ## Retrieve and Parse data
-        #         df = self._parse_psaw_comment_request(req)
-        #         ## Fall Back to PRAW
-        #         if len(df) == 0 and hasattr(self, "_praw") and self._praw is not None and self._allow_praw:
-        #             df = []
-        #             for s in submissions_clean:
-        #                 df.append(self._retrieve_submission_comments_praw(submission_id=s))
-        #             df = [d for d in df if d is not None]
-        #             if len(df) > 0:
-        #                 df = pd.concat(df).reset_index(drop=True)
-        #         ## Sort
-        #         if len(df) > 0:
-        #             df = df.sort_values("created_utc", ascending=True)
-        #             df = df.reset_index(drop=True)
-        #         return df
-        #     except Exception as e:
-        #         LOGGER.warning(e)
-        #         sleep(backoff)
-        #         backoff = 2 ** backoff
     
     def retrieve_author_comments(self,
                                  author,
                                  start_date=None,
                                  end_date=None,
-                                 limit=REQUEST_LIMIT,
+                                 limit=DEFAULT_REQUEST_LIMIT,
                                  chunksize=None):
         """
         Retrieve comments for a particular Reddit user. Does not
@@ -849,30 +847,41 @@ class Reddit(object):
             ## Check Limit
             if limit is not None and total >= limit:
                 break
+            ## Run Multiple Attempts
             for _ in range(retries):
                 try:
                     ## Construct Call
-                    query_params = {"before":tcstop+1,
-                                    "after":tcstart,
-                                    "limit":limit,
+                    query_params = {"since":tcstart,
+                                    "until":tcstop+1,
+                                    "limit":min(limit, MAX_PER_REQUEST) if limit is not None else MAX_PER_REQUEST,
                                     "author":author}
                     ## Construct Call
                     req = self.api.search_comments(**query_params)
                     ## Retrieve and Parse Data
-                    df = self._parse_psaw_comment_request(req)
+                    df = self._parse_pmaw_comment_request(req)
                     if len(df) > 0:
+                        ## Format
                         df = df.sort_values("created_utc", ascending=True)
                         df = df.reset_index(drop=True)
+                        ## Cache
                         df_all.append(df)
+                        ## Update Count
                         total += len(df)
+                        ## Length Limit Warning
+                        if df.shape[0] == MAX_PER_REQUEST:
+                            LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(tcstart, tcstop))
+                    ## Sucess: Break
                     break
                 except Exception as e:
                     LOGGER.warning(e)
                     sleep(backoff)
                     backoff = 2 ** backoff
+        ## Length Check
         if len(df_all) == 0:
-            return
+            return None
+        ## Merge
         df_all = pd.concat(df_all).reset_index(drop=True)
+        ## Reduce
         if limit is not None and len(df_all) > limit:
             df_all = df_all.iloc[:limit].copy()
         return df_all
@@ -881,7 +890,7 @@ class Reddit(object):
                                     author,
                                     start_date=None,
                                     end_date=None,
-                                    limit=REQUEST_LIMIT,
+                                    limit=DEFAULT_REQUEST_LIMIT,
                                     chunksize=None):
         """
         Retrieve submissions for a particular Reddit user. Does not
@@ -921,27 +930,37 @@ class Reddit(object):
             for _ in range(retries):
                 try:
                     ## Construct Call
-                    query_params = {"before":tcstop+1,
-                                    "after":tcstart,
-                                    "limit":limit,
+                    query_params = {"until":tcstop+1,
+                                    "since":tcstart,
+                                    "limit":min(limit, MAX_PER_REQUEST) if limit is not None else MAX_PER_REQUEST,
                                     "author":author}
                     ## Construct Call
                     req = self.api.search_submissions(**query_params)
                     ## Retrieve and Parse Data
-                    df = self._parse_psaw_submission_request(req)
+                    df = self._parse_pmaw_submission_request(req)
                     if len(df) > 0:
+                        ## Sort and Format
                         df = df.sort_values("created_utc", ascending=True)
                         df = df.reset_index(drop=True)
+                        ## Cache
                         df_all.append(df)
+                        ## Length Update
                         total += len(df)
+                        ## Length Limit Warning
+                        if df.shape[0] == MAX_PER_REQUEST:
+                            LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(tcstart, tcstop))
+                    ## Success: Break
                     break
                 except Exception as e:
                     LOGGER.warning(e)
                     sleep(backoff)
                     backoff = 2 ** backoff
+        ## Length Check
         if len(df_all) == 0:
-            return
+            return None
+        ## Concatenate
         df_all = pd.concat(df_all).reset_index(drop=True)
+        ## Reduce
         if limit is not None and len(df_all) > limit:
             df_all = df_all.iloc[:limit].copy()
         return df_all
@@ -951,7 +970,7 @@ class Reddit(object):
                                subreddit=None,
                                start_date=None,
                                end_date=None,
-                               limit=REQUEST_LIMIT):
+                               limit=DEFAULT_REQUEST_LIMIT):
         """
         Search for submissions based on title
 
@@ -975,9 +994,9 @@ class Reddit(object):
         end_epoch = self._get_end_date(end_date)
         ## Construct Query
         query_params = {
-            "before":end_epoch,
-            "after":start_epoch,
-            "limit":limit
+            "until":end_epoch,
+            "since":start_epoch,
+            "limit":min(limit, MAX_PER_REQUEST) if limit is not None else MAX_PER_REQUEST
         }
         if query is not None:
             query_params["title"] = '"{}"'.format(query)
@@ -991,7 +1010,7 @@ class Reddit(object):
                 ## Construct Call
                 req = self.api.search_submissions(**query_params)
                 ## Retrieve and Parse Data
-                df = self._parse_psaw_submission_request(req)
+                df = self._parse_pmaw_submission_request(req)
                 if len(df) > 0:
                     df = df.sort_values("created_utc", ascending=True)
                     df = df.reset_index(drop=True)
@@ -1006,7 +1025,7 @@ class Reddit(object):
                             subreddit=None,
                             start_date=None,
                             end_date=None,
-                            limit=REQUEST_LIMIT):
+                            limit=DEFAULT_REQUEST_LIMIT):
         """
         Search for comments based on text in body
 
@@ -1030,26 +1049,32 @@ class Reddit(object):
         end_epoch = self._get_end_date(end_date)
         ## Construct Query
         query_params = {
-            "before":end_epoch,
-            "after":start_epoch,
-            "limit":limit
+            "until":end_epoch,
+            "since":start_epoch,
+            "limit":min(limit, MAX_PER_REQUEST) if limit is not None else MAX_PER_REQUEST
         }
         if subreddit is not None:
             query_params["subreddit"] = subreddit
         if query is not None:
             query_params["q"] = query
-        ## Make Query Attempt
+        ## Reset Backoff + Retry Counter
         backoff = self._backoff if hasattr(self, "_backoff") else 2
         retries = self._max_retries if hasattr(self, "_max_retries") else 3
+        ## Make Query Attempt
         for _ in range(retries):
             try:
                 ## Construct Call
                 req = self.api.search_comments(**query_params)
                 ## Retrieve and Parse Data
-                df = self._parse_psaw_comment_request(req)
+                df = self._parse_pmaw_comment_request(req)
+                ## Format
                 if len(df) > 0:
                     df = df.sort_values("created_utc", ascending=True)
                     df = df.reset_index(drop=True)
+                    ## Length Check
+                    if df.shape[0] == MAX_PER_REQUEST:
+                        LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(start_epoch, end_epoch))
+                ## Return
                 return df
             except Exception as e:
                 LOGGER.warning(e)
@@ -1084,25 +1109,34 @@ class Reddit(object):
                                              end_epoch,
                                              chunksize)
         ## Query Subreddits
-        endpoint = "https://api.pushshift.io/reddit/search/submission/"
         subreddit_count = Counter()
         for start, stop in tqdm(zip(time_chunks[:-1], time_chunks[1:]), total = len(time_chunks)-1, file=sys.stdout):
             ## Make Get Request
-            req = f"{endpoint}?after={start}&before={stop}&filter=subreddit"
-            ## Cycle Through Attempts
+            req = f"{self._endpoint}/search/submission/?since={start}&until={stop}&filter=subreddit"
+            ## Reset Backoff/Attempt Count
             backoff = self._backoff if hasattr(self, "_backoff") else 2
             retries = self._max_retries if hasattr(self, "_max_retries") else 3
+            ## Cycle Through Attempts
             for _ in range(retries):
                 try:
                     resp = requests.get(req)
                     ## Parse Request
                     if resp.status_code == 200:
+                        ## Get Data
                         data = resp.json()["data"]
+                        ## Length Check
+                        if len(data) == MAX_PER_REQUEST:
+                            LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(start, stop))   
+                        ## Count Subreddits
                         sub_count = Counter([i["subreddit"] for i in data])
+                        ## Update
                         subreddit_count = subreddit_count + sub_count
+                        ## Sleep
                         sleep(self.api.backoff)
+                        ## Success: Move On
                         break
-                    else: ## Sleep with exponential backoff
+                    else:
+                        ## Sleep with exponential backoff
                         sleep(backoff)
                         backoff = 2 ** backoff
                 except Exception as e:
@@ -1155,18 +1189,28 @@ class Reddit(object):
         ## Query Authors
         authors = Counter()
         for start, stop in tqdm(zip(time_chunks[:-1], time_chunks[1:]), total=len(time_chunks)-1, file=sys.stdout):
+            ## Reset Retries/Backoff
             backoff = self._backoff if hasattr(self, "_backoff") else 2
             retries = self._max_retries if hasattr(self, "_max_retries") else 3
+            ## Attempt UJntil Success
             for _ in range(retries):
                 try:
+                    ## Make Request
                     req = endpoint(subreddit=subreddit,
-                                   after=start,
-                                   before=stop,
+                                   since=start,
+                                   until=stop,
                                    filter="author")
+                    ## Isolate Author
                     resp = [a.author for a in req]
+                    ## Length Check
+                    if len(resp) == MAX_PER_REQUEST:
+                        LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(start, stop))
+                    ## Filtering
                     resp = list(filter(lambda i: i != "[deleted]" and i != "[removed]" and not i.lower().endswith("bot"), resp))
+                    ## Update Counts
                     ac = Counter(resp)
                     authors += ac
+                    ## Success: Move to Next Chunk
                     break
                 except Exception as e:
                     LOGGER.warning(e)
