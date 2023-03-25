@@ -63,7 +63,8 @@ class Reddit(object):
                  init_praw=False,
                  max_retries=3,
                  backoff=2,
-                 allow_praw=True):
+                 allow_praw=True,
+                 warn_on_limit=True):
         """
         Initialize a class to retrieve Reddit data based on
         use case and format into friendly dataframes.
@@ -79,7 +80,11 @@ class Reddit(object):
                            query attempts. Increases exponentially with
                            each failed query attempt
             allow_praw (bool): If True (default) and PRAW available,
-             will fallback to using PRAW if not data detected using PMAW.
+                               will fallback to using PRAW if not data 
+                               detected using PMAW.
+            warn_on_limit (bool): If True (default), will warn user whenever
+                                  Pushshift's data limit is reached. Can turn 
+                                  off if you expect this based on your queries.
         
         Returns:
             None
@@ -89,6 +94,7 @@ class Reddit(object):
         self._allow_praw = allow_praw
         self._max_retries = max_retries
         self._backoff = backoff
+        self._warn_on_limit = warn_on_limit
         ## Class Working Variables
         self._last_req = None
         self._endpoint = "https://api.pushshift.io/reddit"
@@ -613,7 +619,8 @@ class Reddit(object):
                         total += len(df)
                         ## Length Limit Warning
                         if df.shape[0] == MAX_PER_REQUEST:
-                            LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(tcstart, tcstop))
+                            if self._warn_on_limit:
+                                LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(tcstart, tcstop))
                     ## Success: Break
                     break
                 except Exception as e:
@@ -869,7 +876,8 @@ class Reddit(object):
                         total += len(df)
                         ## Length Limit Warning
                         if df.shape[0] == MAX_PER_REQUEST:
-                            LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(tcstart, tcstop))
+                            if self._warn_on_limit:
+                                LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(tcstart, tcstop))
                     ## Sucess: Break
                     break
                 except Exception as e:
@@ -948,7 +956,8 @@ class Reddit(object):
                         total += len(df)
                         ## Length Limit Warning
                         if df.shape[0] == MAX_PER_REQUEST:
-                            LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(tcstart, tcstop))
+                            if self._warn_on_limit:
+                                LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(tcstart, tcstop))
                     ## Success: Break
                     break
                 except Exception as e:
@@ -1073,7 +1082,8 @@ class Reddit(object):
                     df = df.reset_index(drop=True)
                     ## Length Check
                     if df.shape[0] == MAX_PER_REQUEST:
-                        LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(start_epoch, end_epoch))
+                        if self._warn_on_limit:
+                            LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(start_epoch, end_epoch))
                 ## Return
                 return df
             except Exception as e:
@@ -1112,7 +1122,7 @@ class Reddit(object):
         subreddit_count = Counter()
         for start, stop in tqdm(zip(time_chunks[:-1], time_chunks[1:]), total = len(time_chunks)-1, file=sys.stdout):
             ## Make Get Request
-            req = f"{self._endpoint}/search/submission/?since={start}&until={stop}&filter=subreddit"
+            req = f"{self._endpoint}/search/submission/?since={start}&until={stop}&filter=subreddit&size=1000"
             ## Reset Backoff/Attempt Count
             backoff = self._backoff if hasattr(self, "_backoff") else 2
             retries = self._max_retries if hasattr(self, "_max_retries") else 3
@@ -1126,13 +1136,14 @@ class Reddit(object):
                         data = resp.json()["data"]
                         ## Length Check
                         if len(data) == MAX_PER_REQUEST:
-                            LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(start, stop))   
+                            if self._warn_on_limit:
+                                LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(start, stop))   
                         ## Count Subreddits
                         sub_count = Counter([i["subreddit"] for i in data])
                         ## Update
                         subreddit_count = subreddit_count + sub_count
                         ## Sleep
-                        sleep(self.api.backoff)
+                        sleep(backoff)
                         ## Success: Move On
                         break
                     else:
@@ -1201,12 +1212,18 @@ class Reddit(object):
                                    until=stop,
                                    filter="author")
                     ## Isolate Author
-                    resp = [a.author for a in req]
+                    resp = []
+                    for a in req:
+                        if isinstance(a, dict):
+                            resp.append(a.get("author"))
+                        else:
+                            resp.append(a.author)
                     ## Length Check
                     if len(resp) == MAX_PER_REQUEST:
-                        LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(start, stop))
+                        if self._warn_on_limit:
+                            LOGGER.warning("WARNING: Maximum result limit reached for time range: {} to {}. Consider reducing the 'chunksize' to query smaller time windows.".format(start, stop))
                     ## Filtering
-                    resp = list(filter(lambda i: i != "[deleted]" and i != "[removed]" and not i.lower().endswith("bot"), resp))
+                    resp = list(filter(lambda i: i is not None and i != "[deleted]" and i != "[removed]" and not i.lower().endswith("bot"), resp))
                     ## Update Counts
                     ac = Counter(resp)
                     authors += ac
